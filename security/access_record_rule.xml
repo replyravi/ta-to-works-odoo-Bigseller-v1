@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="0">
+        <record id="group_import_bigseller_order_v1" model="res.groups">
+            <field name="name">BigSeller Order V1</field>
+            <field name="implied_ids" eval="[(4,ref('base.group_user'))]"/>
+        </record>
+    </data>
+</odoo>

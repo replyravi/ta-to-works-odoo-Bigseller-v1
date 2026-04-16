@@ -1,0 +1,5 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_gen_bigseller_sale_v1,gen.bigseller.sale.v1,model_gen_bigseller_sale_v1,,1,1,1,1
+access_mp_status_history_user,mp.status.history user,model_mp_status_history,base.group_user,1,0,0,0
+access_mp_status_history_manager,mp.status.history manager,model_mp_status_history,rss_bigseller_order_v1.group_import_bigseller_order_v1,1,1,1,1
+access_bigseller_json_import,bigseller.json.import,model_bigseller_json_import,,1,1,1,1

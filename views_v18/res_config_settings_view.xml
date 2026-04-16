@@ -1,0 +1,180 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <data>
+
+        <record id="res_config_settings_bigseller_view" model="ir.ui.view">
+            <field name="name">res.config.settings.bigseller</field>
+            <field name="model">res.config.settings</field>
+            <field name="inherit_id" ref="sale.res_config_settings_view_form"/>
+            <field name="arch" type="xml">
+                <xpath expr="//div[hasclass('settings')]" position="inside">
+
+                    <div class="app_settings_block" data-string="BigSeller"
+                         string="BigSeller" data-key="rss_bigseller_order_v1">
+                        <h2>BigSeller API Configuration</h2>
+                        <div class="row mt16 o_settings_container">
+
+                            <div class="col-12 col-lg-6 o_setting_box">
+                                <div class="o_setting_left_pane">
+                                    <field name="bigseller_sync_enabled"/>
+                                </div>
+                                <div class="o_setting_right_pane">
+                                    <label for="bigseller_sync_enabled"/>
+                                    <div class="text-muted">
+                                        Enable automatic order synchronisation with BigSeller
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="col-12 col-lg-6 o_setting_box"
+                                 invisible="not bigseller_sync_enabled">
+                                <div class="o_setting_right_pane">
+                                    <label for="bigseller_sync_interval"/>
+                                    <field name="bigseller_sync_interval" class="oe_inline"/>
+                                    <span class="text-muted"> minutes</span>
+                                </div>
+                            </div>
+
+                            <div class="col-12 col-lg-6 o_setting_box"
+                                 invisible="not bigseller_sync_enabled">
+                                <div class="o_setting_left_pane">
+                                    <field name="bigseller_auto_create_orders"/>
+                                </div>
+                                <div class="o_setting_right_pane">
+                                    <label for="bigseller_auto_create_orders"/>
+                                    <div class="text-muted">
+                                        Automatically create new Sale Orders when BigSeller has
+                                        orders not yet in Odoo. Products and customers are
+                                        auto-created if they don't exist.
+                                    </div>
+                                </div>
+                            </div>
+
+                        </div>
+
+                        <div class="row mt16 o_settings_container">
+
+                            <div class="col-12 o_setting_box">
+                                <div class="o_setting_right_pane">
+                                    <label for="bigseller_base_url"/>
+                                    <field name="bigseller_base_url" class="w-50"/>
+                                </div>
+                            </div>
+
+                            <div class="col-12 o_setting_box">
+                                <div class="o_setting_right_pane">
+                                    <label for="bigseller_session_cookie"/>
+                                    <div class="text-muted">
+                                        Log into bigseller.com, open DevTools &gt; Application &gt; Cookies,
+                                        copy the full cookie string and paste it below.
+                                    </div>
+                                    <field name="bigseller_session_cookie"
+                                           class="w-100"
+                                           placeholder="PHPSESSID=abc123; _ga=GA1.2..."/>
+                                </div>
+                            </div>
+
+                        </div>
+
+                        <div class="row mt16 o_settings_container">
+
+                            <div class="col-12 col-lg-6 o_setting_box">
+                                <div class="o_setting_right_pane">
+                                    <button name="action_bigseller_test_connection"
+                                            type="object" string="Test Connection"
+                                            class="btn-primary" icon="fa-plug"/>
+                                    <button name="action_bigseller_sync_now"
+                                            type="object" string="Sync Now"
+                                            class="btn-secondary ms-2" icon="fa-refresh"/>
+                                </div>
+                            </div>
+
+                            <div class="col-12 col-lg-6 o_setting_box">
+                                <div class="o_setting_right_pane">
+                                    <label for="bigseller_last_sync"/>
+                                    <field name="bigseller_last_sync" readonly="1"/>
+                                    <br/>
+                                    <label for="bigseller_last_sync_error"/>
+                                    <field name="bigseller_last_sync_error" readonly="1"
+                                           invisible="not bigseller_last_sync_error"/>
+                                </div>
+                            </div>
+
+                        </div>
+
+                        <h2>Browser Auto-Sync (Recommended)</h2>
+                        <div class="row mt8 o_settings_container">
+                            <div class="col-12 o_setting_box">
+                                <div class="o_setting_right_pane">
+                                    <div class="alert alert-info" role="alert">
+                                        <strong>Fully automatic</strong> — Install a Tampermonkey browser
+                                        script that runs on BigSeller and pushes orders to Odoo every
+                                        1 minute. No manual copy-paste needed!
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="col-12 o_setting_box">
+                                <div class="o_setting_right_pane">
+                                    <label for="bigseller_auto_sync_token"/>
+                                    <div class="d-flex align-items-center">
+                                        <field name="bigseller_auto_sync_token"
+                                               class="w-50 me-2"
+                                               readonly="1"/>
+                                        <button name="action_generate_auto_sync_token"
+                                                type="object"
+                                                string="Generate Token"
+                                                class="btn-primary"
+                                                icon="fa-key"/>
+                                    </div>
+                                    <div class="text-muted mt-1">
+                                        Click "Generate Token", then copy it into the
+                                        Tampermonkey script (SYNC_TOKEN value).
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="col-12 o_setting_box">
+                                <div class="o_setting_right_pane">
+                                    <div class="alert alert-success" role="alert">
+                                        <strong>Setup steps:</strong>
+                                        <ol class="mb-0 mt-2">
+                                            <li>Install <a href="https://www.tampermonkey.net/" target="_blank">Tampermonkey</a> browser extension</li>
+                                            <li>Click "Generate Token" above and copy the token</li>
+                                            <li>In Tampermonkey, create a new script and paste the
+                                                userscript from the file:
+                                                <code>static/src/tampermonkey/bigseller_odoo_sync.user.js</code></li>
+                                            <li>Edit the 3 config lines at the top of the script:
+                                                <b>ODOO_URL</b>, <b>ODOO_DB</b>, <b>SYNC_TOKEN</b></li>
+                                            <li>Save the script, open BigSeller — sync starts automatically!</li>
+                                        </ol>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <h2>Quick JSON Import (Manual)</h2>
+                        <div class="row mt8 o_settings_container">
+                            <div class="col-12 o_setting_box">
+                                <div class="o_setting_right_pane">
+                                    <div class="alert alert-warning" role="alert">
+                                        <strong>Manual fallback</strong> — If you prefer not to use
+                                        Tampermonkey, use <b>Sales → Import BigSeller Orders (JSON)</b>.
+                                        <br/><br/>
+                                        Run this in the BigSeller browser console (F12) to copy orders:
+                                        <br/>
+                                        <code style="font-size:11px; word-break:break-all;">
+fetch('/api/v1/order/new/pageList.json',{method:'POST',headers:{'Content-Type':'application/json',clienttype:'1'},body:JSON.stringify({status:'new',searchType:'orderNo',pageNo:1,allOrder:false,historyOrder:false,packState:'0',desc:0,orderBy:'expireTime'})}).then(r=&gt;r.json()).then(d=&gt;{var t=document.createElement('textarea');t.value=JSON.stringify(d);document.body.appendChild(t);t.select();document.execCommand('copy');document.body.removeChild(t);alert('Copied '+((d.data||{}).page||{}).totalSize+' orders to clipboard! Now paste in Odoo.')})
+                                        </code>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                </xpath>
+            </field>
+        </record>
+
+    </data>
+</odoo>

@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <data>
+
+        <!-- ── XLS Import Wizard V1 ────────────────────────────────────── -->
+        <record id="gen_bigseller_sale_v1_wizard_view" model="ir.ui.view">
+            <field name="name">wizard for import bigseller order v1 from xls file</field>
+            <field name="model">gen.bigseller.sale.v1</field>
+            <field name="arch" type="xml">
+                <form string="Import BigSeller Order V1">
+                    <group>
+                        <field name="file_name" invisible="1"/>
+                        <field name="file" filename="file_name"/>
+                    </group>
+                    <footer>
+                        <button name="import_sale" string="Import" type="object" class="oe_highlight"/>
+                        <button string="Cancel" class="btn-secondary" special="cancel"/>
+                    </footer>
+                </form>
+            </field>
+        </record>
+
+        <record id="gen_bigseller_sale_v1_import_wizard" model="ir.actions.act_window">
+            <field name="name">Import BigSeller Sale Order V1 (XLS)</field>
+            <field name="res_model">gen.bigseller.sale.v1</field>
+            <field name="view_id" ref="gen_bigseller_sale_v1_wizard_view"/>
+            <field name="view_mode">form</field>
+            <field name="target">new</field>
+        </record>
+
+        <menuitem action="gen_bigseller_sale_v1_import_wizard"
+                  sequence="63"
+                  id="gen_bigseller_sale_v1_wizard_import"
+                  parent="sale.sale_order_menu"
+                  groups="rss_bigseller_order_v1.group_import_bigseller_order_v1"
+                  />
+
+        <!-- ── JSON Import Wizard (paste BigSeller API response) ──────── -->
+        <record id="bigseller_json_import_wizard_view" model="ir.ui.view">
+            <field name="name">bigseller.json.import.form</field>
+            <field name="model">bigseller.json.import</field>
+            <field name="arch" type="xml">
+                <form string="Import BigSeller Orders (JSON)">
+                    <field name="state" invisible="1"/>
+
+                    <div attrs="{'invisible': [('state', '!=', 'paste')]}">
+                        <div class="alert alert-info" role="alert">
+                            <strong>How to get the JSON data:</strong>
+                            <ol class="mb-0">
+                                <li>Open <b>bigseller.com</b> in Chrome (make sure you're logged in)</li>
+                                <li>Press <b>F12</b> to open DevTools → click the <b>Network</b> tab</li>
+                                <li>Go to the order page in BigSeller (e.g. Orders → All / New / Shipped)</li>
+                                <li>In the Network tab, click on <b>pageList.json</b></li>
+                                <li>Click the <b>Response</b> sub-tab</li>
+                                <li>Press <b>Ctrl+A</b> (select all) then <b>Ctrl+C</b> (copy)</li>
+                                <li>Paste it below and click <b>Preview</b></li>
+                            </ol>
+                        </div>
+                        <group>
+                            <field name="json_data" nolabel="1"
+                                   placeholder='Paste the BigSeller pageList.json response here...'
+                                   widget="text"/>
+                        </group>
+                        <footer>
+                            <button name="action_preview" string="Preview"
+                                    type="object" class="oe_highlight" icon="fa-search"/>
+                            <button name="action_import" string="Import Directly"
+                                    type="object" class="btn-secondary" icon="fa-download"/>
+                            <button string="Cancel" class="btn-secondary" special="cancel"/>
+                        </footer>
+                    </div>
+
+                    <div attrs="{'invisible': [('state', '!=', 'preview')]}">
+                        <group>
+                            <field name="preview_count"/>
+                        </group>
+                        <group>
+                            <field name="preview_text" nolabel="1" readonly="1"
+                                   widget="text"/>
+                        </group>
+                        <footer>
+                            <button name="action_import" string="Import Orders"
+                                    type="object" class="oe_highlight" icon="fa-download"/>
+                            <button name="action_back" string="Back"
+                                    type="object" class="btn-secondary" icon="fa-arrow-left"/>
+                            <button string="Cancel" class="btn-secondary" special="cancel"/>
+                        </footer>
+                    </div>
+                </form>
+            </field>
+        </record>
+
+        <record id="bigseller_json_import_action" model="ir.actions.act_window">
+            <field name="name">Import BigSeller Orders (JSON)</field>
+            <field name="res_model">bigseller.json.import</field>
+            <field name="view_id" ref="bigseller_json_import_wizard_view"/>
+            <field name="view_mode">form</field>
+            <field name="target">new</field>
+        </record>
+
+        <menuitem action="bigseller_json_import_action"
+                  sequence="64"
+                  id="bigseller_json_import_menu"
+                  parent="sale.sale_order_menu"
+                  groups="base.group_user"
+                  />
+
+    </data>
+</odoo>
