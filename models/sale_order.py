@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import logging
+from datetime import timedelta
 from odoo import models, fields, api, _
 from odoo.exceptions import UserError
 from .mp_status_history import BIGSELLER_STATUS_SELECTION
@@ -324,9 +325,14 @@ class SaleOrderBigSellerV1(models.Model):
         state = bs_order.get('state', 'new')
         currency_code = bs_order.get('amountUnit', 'THB')
 
-        partner = self._bigseller_get_or_create_partner(buyer_name)
+        platform_partner = self._bigseller_get_or_create_partner(
+            platform or 'BigSeller')
+        delivery_contact = self._bigseller_get_or_create_delivery_address(
+            buyer_name, platform_partner)
         currency = self.env['res.currency'].search(
             [('name', '=ilike', currency_code)], limit=1)
+
+        order_date = self._bigseller_parse_order_date(bs_order)
 
         order_lines = []
         for item in bs_order.get('orderItemList', []):
@@ -347,7 +353,8 @@ class SaleOrderBigSellerV1(models.Model):
 
         vals = {
             'name': order_no,
-            'partner_id': partner.id,
+            'partner_id': platform_partner.id,
+            'partner_shipping_id': delivery_contact.id,
             'mp_marketplace': platform,
             'mp_status': self._map_bigseller_status(state),
             'mp_last_update': fields.Datetime.now(),
@@ -356,10 +363,16 @@ class SaleOrderBigSellerV1(models.Model):
             'bigseller_shop_name': shop_name,
             'bigseller_platform_order_id': order_no,
         }
+        if order_date:
+            vals['date_order'] = order_date
         if currency:
             vals['currency_id'] = currency.id
         if order_lines:
             vals['order_line'] = order_lines
+
+        order_type = self._bigseller_resolve_order_type(platform, shop_name)
+        if order_type:
+            self._bigseller_apply_order_type(vals, order_type)
 
         order = self.create(vals)
 
@@ -383,18 +396,137 @@ class SaleOrderBigSellerV1(models.Model):
             order.name, platform, state)
         return order
 
+    def _bigseller_resolve_order_type(self, platform, shop_name):
+        """Match BigSeller platform/shop to a sale.order.type record.
+
+        The production system has types like 'MP: Lazada', 'MP: Lazada 2',
+        'MP: Shopee', 'MP: TikTok'.  We search by checking if the type name
+        contains the platform keyword.  When multiple matches exist (e.g.
+        Lazada vs Lazada 2), we use the shop_name to pick the right one.
+
+        Returns a sale.order.type recordset (possibly empty).
+        """
+        if 'sale.order.type' not in self.env:
+            return False
+
+        OrderType = self.env['sale.order.type']
+        platform_lower = (platform or '').lower()
+        shop_lower = (shop_name or '').lower()
+
+        keyword = ''
+        if 'lazada' in platform_lower or 'lazada' in shop_lower:
+            keyword = 'Lazada'
+        elif 'shopee' in platform_lower or 'shopee' in shop_lower:
+            keyword = 'Shopee'
+        elif 'tiktok' in platform_lower or 'tiktok' in shop_lower:
+            keyword = 'TikTok'
+        elif platform_lower:
+            keyword = platform
+
+        if not keyword:
+            return OrderType.browse()
+
+        types = OrderType.search([('name', 'ilike', keyword)])
+        if not types:
+            _logger.warning(
+                'No sale.order.type found matching platform "%s" / shop "%s"',
+                platform, shop_name)
+            return OrderType.browse()
+
+        if len(types) == 1:
+            return types
+
+        # Multiple matches — disambiguate using shop_name.
+        # Check longest suffix first so "Lazada 2" beats "Lazada"
+        # when the shop name contains "lazada 2".
+        for ot in types.sorted(key=lambda t: len(t.name), reverse=True):
+            type_suffix = ot.name.replace('MP:', '').strip().lower()
+            if type_suffix and type_suffix in shop_lower:
+                return ot
+
+        # Fallback: shortest (most generic) match
+        return types.sorted(key=lambda t: len(t.name))[0]
+
+    @staticmethod
+    def _bigseller_apply_order_type(vals, order_type):
+        """Merge fields from a sale.order.type into the SO vals dict."""
+        if not order_type:
+            return
+        vals['type_id'] = order_type.id
+        if order_type.warehouse_id:
+            vals['warehouse_id'] = order_type.warehouse_id.id
+        if order_type.pricelist_id:
+            vals['pricelist_id'] = order_type.pricelist_id.id
+        if order_type.fiscal_position_id:
+            vals['fiscal_position_id'] = order_type.fiscal_position_id.id
+        if hasattr(order_type, 'sale_team_id') and order_type.sale_team_id:
+            vals['team_id'] = order_type.sale_team_id.id
+        if order_type.user_id:
+            vals['user_id'] = order_type.user_id.id
+        if hasattr(order_type, 'utm_source_id') and order_type.utm_source_id:
+            vals['source_id'] = order_type.utm_source_id.id
+        if hasattr(order_type, 'company_id') and order_type.company_id:
+            vals['company_id'] = order_type.company_id.id
+
+        deadline_days = 0
+        if hasattr(order_type, 'delivery_deadline_days'):
+            deadline_days = order_type.delivery_deadline_days or 0
+        if deadline_days > 0:
+            base_date = vals.get('date_order') or fields.Datetime.now()
+            if isinstance(base_date, str):
+                base_date = fields.Datetime.from_string(base_date)
+            vals['commitment_date'] = base_date + timedelta(days=deadline_days)
+
     def _bigseller_get_or_create_partner(self, name):
-        """Find an existing partner by name or create a new one."""
+        """Find or create a company-type partner for the platform name.
+
+        The partner_id on the SO represents the marketplace company
+        (e.g. "Lazada", "Shopee", "TikTok").
+        """
         Partner = self.env['res.partner']
-        partner = Partner.search([('name', '=ilike', name)], limit=1)
+        partner = Partner.search([
+            ('name', '=ilike', name),
+            ('is_company', '=', True),
+        ], limit=1)
+        if not partner:
+            partner = Partner.search([('name', '=ilike', name)], limit=1)
         if not partner:
             partner = Partner.create({
                 'name': name,
+                'is_company': True,
                 'customer_rank': 1,
-                'comment': 'Auto-created by BigSeller API sync',
+                'comment': 'Auto-created by BigSeller import',
             })
-            _logger.info('Created partner: %s', name)
+            _logger.info('Created company partner: %s', name)
         return partner
+
+    def _bigseller_get_or_create_delivery_address(self, buyer_name, parent_partner):
+        """Find or create a delivery-type child contact under the platform partner.
+
+        The buyer name from BigSeller becomes the delivery address contact,
+        parented under the marketplace company (Lazada / Shopee / TikTok).
+        """
+        Partner = self.env['res.partner']
+        if not buyer_name or buyer_name == parent_partner.name:
+            return parent_partner
+
+        existing = Partner.search([
+            ('name', '=ilike', buyer_name),
+            ('type', '=', 'delivery'),
+            ('parent_id', '=', parent_partner.id),
+        ], limit=1)
+        if existing:
+            return existing
+
+        delivery = Partner.create({
+            'name': buyer_name,
+            'parent_id': parent_partner.id,
+            'type': 'delivery',
+            'comment': 'Delivery address from BigSeller import',
+        })
+        _logger.info('Created delivery contact: %s (under %s)',
+                      buyer_name, parent_partner.name)
+        return delivery
 
     def _bigseller_get_or_create_product(self, sku, item_data):
         """Find product by SKU (default_code) or create a placeholder."""
@@ -440,6 +572,34 @@ class SaleOrderBigSellerV1(models.Model):
                 except (ValueError, TypeError):
                     continue
         return 0.0
+
+    @staticmethod
+    def _bigseller_parse_order_date(bs_order):
+        """Extract the real order date from BigSeller JSON.
+
+        BigSeller provides dates as epoch-millisecond timestamps in fields
+        like paidTime, orderCreateTime, createTime.  Returns a datetime
+        or None if no usable date is found.
+        """
+        from datetime import datetime
+        for key in ('paidTime', 'orderCreateTime', 'createTime', 'payTime'):
+            val = bs_order.get(key)
+            if val:
+                try:
+                    ts = int(val)
+                    if ts > 1e12:
+                        ts = ts / 1000
+                    return datetime.utcfromtimestamp(ts)
+                except (ValueError, TypeError, OSError):
+                    continue
+        date_str = bs_order.get('orderDate') or bs_order.get('createDate')
+        if date_str and isinstance(date_str, str):
+            for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d', '%d/%m/%Y %H:%M:%S'):
+                try:
+                    return datetime.strptime(date_str, fmt)
+                except ValueError:
+                    continue
+        return None
 
     @api.model
     def _map_bigseller_status(self, raw_status):

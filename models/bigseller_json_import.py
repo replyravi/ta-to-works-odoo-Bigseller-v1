@@ -254,4 +254,38 @@ class BigSellerJsonImport(models.TransientModel):
             order.write({'bigseller_shop_name': shop_name})
             changed = True
 
+        platform = (bs_order.get('viewPlatfrom')
+                    or bs_order.get('platform', ''))
+        s_name = shop_name or order.bigseller_shop_name or ''
+        order_type = SaleOrder._bigseller_resolve_order_type(platform, s_name)
+        if order_type and (
+            not getattr(order, 'type_id', None)
+            or not order.type_id
+            or order.type_id.id != order_type.id
+        ):
+            type_vals = {}
+            SaleOrder._bigseller_apply_order_type(type_vals, order_type)
+            order.write(type_vals)
+            changed = True
+
+        if platform and (
+            not order.partner_id.is_company
+            or order.partner_id.name.lower() not in (
+                'lazada', 'shopee', 'tiktok', 'bigseller')
+        ):
+            platform_partner = SaleOrder._bigseller_get_or_create_partner(
+                platform)
+            buyer_name = (
+                bs_order.get('buyerUsername')
+                or bs_order.get('contactPerson')
+                or ''
+            )
+            update_vals = {'partner_id': platform_partner.id}
+            if buyer_name:
+                delivery = SaleOrder._bigseller_get_or_create_delivery_address(
+                    buyer_name, platform_partner)
+                update_vals['partner_shipping_id'] = delivery.id
+            order.write(update_vals)
+            changed = True
+
         return changed
