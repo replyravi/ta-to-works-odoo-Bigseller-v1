@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import re
 import logging
 from datetime import timedelta
 from odoo import models, fields, api, _
@@ -6,6 +7,27 @@ from odoo.exceptions import UserError
 from .mp_status_history import BIGSELLER_STATUS_SELECTION
 
 _logger = logging.getLogger(__name__)
+
+# Allowlist: only orders from these BigSeller shops are imported.
+# Key = Shop ID (extracted from shopName parentheses), Value = SO Type name.
+SHOP_ID_TO_ORDER_TYPE = {
+    '1386965355': 'MP: Shopee',           # ContactsDirect Shopee
+    '100800160369': 'MP: Lazada',         # ContactsDirect Lazada
+    '101414768012': 'MP: Lazada2',        # TA-TO.COM Lazada
+    '7494189457190716861': 'MP: TikTok',  # TIKTOK TA-TO.com
+}
+
+_SHOP_ID_RE = re.compile(r'\((\d+)\)\s*$')
+
+
+def _extract_shop_id(shop_name):
+    """Extract the numeric Shop ID from a BigSeller shopName string.
+
+    E.g. "ContactsDirect Shopee(1386965355)" -> "1386965355"
+    """
+    m = _SHOP_ID_RE.search(shop_name or '')
+    return m.group(1) if m else ''
+
 
 STATUS_ACTION_MAP = {
     'new': 'Created Quotation',
@@ -293,9 +315,10 @@ class SaleOrderBigSellerV1(models.Model):
                         updated += 1
                 elif auto_create:
                     try:
-                        self._bigseller_create_order(bs_order)
-                        created += 1
-                        self.env.cr.commit()
+                        new_so = self._bigseller_create_order(bs_order)
+                        if new_so:
+                            created += 1
+                            self.env.cr.commit()
                     except Exception as e:
                         self.env.cr.rollback()
                         _logger.error(
@@ -312,6 +335,12 @@ class SaleOrderBigSellerV1(models.Model):
     # Auto-create Sale Orders from BigSeller API data
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _bigseller_is_allowed_shop(shop_name):
+        """Return True if the order's shop is in the allowlist."""
+        shop_id = _extract_shop_id(shop_name)
+        return shop_id in SHOP_ID_TO_ORDER_TYPE
+
     def _bigseller_create_order(self, bs_order):
         """Create a new Sale Order from a BigSeller API order dict."""
         order_no = bs_order.get('platformOrderId', '')
@@ -324,6 +353,11 @@ class SaleOrderBigSellerV1(models.Model):
         shop_name = bs_order.get('shopName', '')
         state = bs_order.get('state', 'new')
         currency_code = bs_order.get('amountUnit', 'THB')
+
+        if not self._bigseller_is_allowed_shop(shop_name):
+            _logger.info('Skipping order %s — shop "%s" not in allowlist',
+                         order_no, shop_name)
+            return self.browse()
 
         platform_partner = self._bigseller_get_or_create_partner(
             platform or 'BigSeller')
@@ -340,10 +374,7 @@ class SaleOrderBigSellerV1(models.Model):
             qty = item.get('quantity', 1)
             price = self._bigseller_parse_price(item)
             product = self._bigseller_get_or_create_product(sku, item)
-            line_name = product.display_name
-            attr = (item.get('varAttr') or '').strip()
-            if attr:
-                line_name = f'{line_name} ({attr})'
+            line_name = self._bigseller_build_line_name(product, item)
             order_lines.append((0, 0, {
                 'product_id': product.id,
                 'product_uom_qty': qty,
@@ -355,6 +386,7 @@ class SaleOrderBigSellerV1(models.Model):
             'name': order_no,
             'partner_id': platform_partner.id,
             'partner_shipping_id': delivery_contact.id,
+            'client_order_ref': order_no,
             'mp_marketplace': platform,
             'mp_status': self._map_bigseller_status(state),
             'mp_last_update': fields.Datetime.now(),
@@ -397,22 +429,31 @@ class SaleOrderBigSellerV1(models.Model):
         return order
 
     def _bigseller_resolve_order_type(self, platform, shop_name):
-        """Match BigSeller platform/shop to a sale.order.type record.
+        """Match BigSeller shop to a sale.order.type using the Shop ID table.
 
-        The production system has types like 'MP: Lazada', 'MP: Lazada 2',
-        'MP: Shopee', 'MP: TikTok'.  We search by checking if the type name
-        contains the platform keyword.  When multiple matches exist (e.g.
-        Lazada vs Lazada 2), we use the shop_name to pick the right one.
+        Primary: extract Shop ID from shopName, look up in
+        SHOP_ID_TO_ORDER_TYPE, then search for the exact SO Type name.
+        Fallback: keyword-based search by platform name.
 
-        Returns a sale.order.type recordset (possibly empty).
+        Returns a sale.order.type recordset (possibly empty / False).
         """
         if 'sale.order.type' not in self.env:
             return False
 
         OrderType = self.env['sale.order.type']
+
+        shop_id = _extract_shop_id(shop_name)
+        type_name = SHOP_ID_TO_ORDER_TYPE.get(shop_id)
+        if type_name:
+            ot = OrderType.search([('name', '=', type_name)], limit=1)
+            if ot:
+                return ot
+            _logger.warning(
+                'SO Type "%s" not found for shop_id=%s, trying fallback',
+                type_name, shop_id)
+
         platform_lower = (platform or '').lower()
         shop_lower = (shop_name or '').lower()
-
         keyword = ''
         if 'lazada' in platform_lower or 'lazada' in shop_lower:
             keyword = 'Lazada'
@@ -429,22 +470,18 @@ class SaleOrderBigSellerV1(models.Model):
         types = OrderType.search([('name', 'ilike', keyword)])
         if not types:
             _logger.warning(
-                'No sale.order.type found matching platform "%s" / shop "%s"',
+                'No sale.order.type found for platform "%s" / shop "%s"',
                 platform, shop_name)
             return OrderType.browse()
 
         if len(types) == 1:
             return types
 
-        # Multiple matches — disambiguate using shop_name.
-        # Check longest suffix first so "Lazada 2" beats "Lazada"
-        # when the shop name contains "lazada 2".
         for ot in types.sorted(key=lambda t: len(t.name), reverse=True):
             type_suffix = ot.name.replace('MP:', '').strip().lower()
             if type_suffix and type_suffix in shop_lower:
                 return ot
 
-        # Fallback: shortest (most generic) match
         return types.sorted(key=lambda t: len(t.name))[0]
 
     @staticmethod
@@ -467,6 +504,19 @@ class SaleOrderBigSellerV1(models.Model):
             vals['source_id'] = order_type.utm_source_id.id
         if hasattr(order_type, 'company_id') and order_type.company_id:
             vals['company_id'] = order_type.company_id.id
+
+        # contact_id → customer & invoice address (Peter's new field)
+        if hasattr(order_type, 'contact_id') and order_type.contact_id:
+            vals['partner_id'] = order_type.contact_id.id
+            vals['partner_invoice_id'] = order_type.contact_id.id
+
+        # payment_term_id (Peter's new field)
+        if hasattr(order_type, 'payment_term_id') and order_type.payment_term_id:
+            vals['payment_term_id'] = order_type.payment_term_id.id
+
+        # carrier_id → delivery method (Peter's new field)
+        if hasattr(order_type, 'carrier_id') and order_type.carrier_id:
+            vals['carrier_id'] = order_type.carrier_id.id
 
         deadline_days = 0
         if hasattr(order_type, 'delivery_deadline_days'):
@@ -572,6 +622,22 @@ class SaleOrderBigSellerV1(models.Model):
                 except (ValueError, TypeError):
                     continue
         return 0.0
+
+    @staticmethod
+    def _bigseller_build_line_name(product, item_data):
+        """Build a descriptive order-line name from product + BigSeller item.
+
+        Uses product display_name as base, then enriches with the BigSeller
+        item description and variant attributes when available.
+        """
+        parts = [product.display_name or product.name]
+        bs_name = (item_data.get('itemName') or item_data.get('vName') or '').strip()
+        if bs_name and bs_name.lower() != (product.name or '').lower():
+            parts.append(bs_name)
+        attr = (item_data.get('varAttr') or '').strip()
+        if attr:
+            parts.append('(%s)' % attr)
+        return ' - '.join(parts) if len(parts) > 1 else parts[0]
 
     @staticmethod
     def _bigseller_parse_order_date(bs_order):

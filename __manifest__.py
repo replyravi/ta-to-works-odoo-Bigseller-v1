@@ -8,7 +8,7 @@
 #
 {
     'name': 'RSS BigSeller Order V1',
-    'version': '18.0.5.0.0',
+    'version': '18.0.6.0.0',
     'sequence': 5,
     'category': 'Sales',
     'summary': 'BigSeller marketplace order management with API sync and status tracking',

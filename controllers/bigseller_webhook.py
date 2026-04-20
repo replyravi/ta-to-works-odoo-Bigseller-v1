@@ -5,6 +5,9 @@ import logging
 import odoo
 from odoo import http, SUPERUSER_ID, api
 from odoo.http import request, Response
+from odoo.addons.rss_bigseller_order_v1.models.sale_order import (
+    _extract_shop_id, SHOP_ID_TO_ORDER_TYPE,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -78,6 +81,10 @@ class BigSellerWebhook(http.Controller):
             order_no = (bs_order.get('platformOrderId') or '').strip()
             if not order_no:
                 continue
+            shop = bs_order.get('shopName', '')
+            shop_id = _extract_shop_id(shop)
+            if shop_id and shop_id not in SHOP_ID_TO_ORDER_TYPE:
+                continue
             try:
                 existing = SaleOrder.search([
                     '|',
@@ -88,8 +95,9 @@ class BigSellerWebhook(http.Controller):
                     if wizard._update_existing_order(existing, bs_order):
                         updated += 1
                 else:
-                    SaleOrder._bigseller_create_order(bs_order)
-                    created += 1
+                    new_so = SaleOrder._bigseller_create_order(bs_order)
+                    if new_so:
+                        created += 1
                 env.cr.commit()
             except Exception as e:
                 env.cr.rollback()

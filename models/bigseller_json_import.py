@@ -10,6 +10,7 @@ import json
 import logging
 from odoo import models, fields, api, _
 from odoo.exceptions import UserError, ValidationError
+from .sale_order import _extract_shop_id, SHOP_ID_TO_ORDER_TYPE
 
 _logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ class BigSellerJsonImport(models.TransientModel):
         new_count = 0
         update_count = 0
         skip_count = 0
+        filtered_count = 0
         preview_lines = []
         SaleOrder = self.env['sale.order']
 
@@ -54,6 +56,11 @@ class BigSellerJsonImport(models.TransientModel):
             if not order_no:
                 skip_count += 1
                 continue
+            shop = bs_order.get('shopName', '')
+            shop_id = _extract_shop_id(shop)
+            if shop_id and shop_id not in SHOP_ID_TO_ORDER_TYPE:
+                filtered_count += 1
+                continue
             existing = SaleOrder.search([
                 '|',
                 ('name', '=', order_no),
@@ -61,7 +68,6 @@ class BigSellerJsonImport(models.TransientModel):
             ], limit=1)
             status = bs_order.get('state', 'new')
             items = len(bs_order.get('orderItemList', []))
-            shop = bs_order.get('shopName', '')
             if existing:
                 update_count += 1
                 preview_lines.append(
@@ -77,10 +83,11 @@ class BigSellerJsonImport(models.TransientModel):
             'Total orders in JSON: %d\n'
             'New orders to create: %d\n'
             'Existing orders to update: %d\n'
+            'Filtered (shop not in allowlist): %d\n'
             'Skipped (no order number): %d\n'
             '───────────────────────────\n%s'
-        ) % (len(orders), new_count, update_count, skip_count,
-             '\n'.join(preview_lines[:50]))
+        ) % (len(orders), new_count, update_count, filtered_count,
+             skip_count, '\n'.join(preview_lines[:50]))
         if len(preview_lines) > 50:
             summary += '\n... and %d more' % (len(preview_lines) - 50)
 
@@ -113,6 +120,10 @@ class BigSellerJsonImport(models.TransientModel):
             order_no = (bs_order.get('platformOrderId') or '').strip()
             if not order_no:
                 continue
+            shop = bs_order.get('shopName', '')
+            shop_id = _extract_shop_id(shop)
+            if shop_id and shop_id not in SHOP_ID_TO_ORDER_TYPE:
+                continue
             try:
                 existing = SaleOrder.search([
                     '|',
@@ -128,7 +139,8 @@ class BigSellerJsonImport(models.TransientModel):
                 else:
                     new_order = SaleOrder.sudo()._bigseller_create_order(
                         bs_order)
-                    created_ids.append(new_order.id)
+                    if new_order:
+                        created_ids.append(new_order.id)
                 self.env.cr.commit()
             except Exception as e:
                 self.env.cr.rollback()
@@ -235,6 +247,7 @@ class BigSellerJsonImport(models.TransientModel):
         """
         changed = False
         SaleOrder = self.env['sale.order']
+        update_vals = {}
 
         bs_status = SaleOrder._map_bigseller_status(
             bs_order.get('state', 'new'))
@@ -246,13 +259,15 @@ class BigSellerJsonImport(models.TransientModel):
 
         bs_id = str(bs_order.get('id', ''))
         if bs_id and not order.bigseller_order_id:
-            order.write({'bigseller_order_id': bs_id})
-            changed = True
+            update_vals['bigseller_order_id'] = bs_id
 
         shop_name = bs_order.get('shopName', '')
         if shop_name and not order.bigseller_shop_name:
-            order.write({'bigseller_shop_name': shop_name})
-            changed = True
+            update_vals['bigseller_shop_name'] = shop_name
+
+        order_no = (bs_order.get('platformOrderId') or '').strip()
+        if order_no and not order.client_order_ref:
+            update_vals['client_order_ref'] = order_no
 
         platform = (bs_order.get('viewPlatfrom')
                     or bs_order.get('platform', ''))
@@ -263,28 +278,30 @@ class BigSellerJsonImport(models.TransientModel):
             or not order.type_id
             or order.type_id.id != order_type.id
         ):
-            type_vals = {}
-            SaleOrder._bigseller_apply_order_type(type_vals, order_type)
-            order.write(type_vals)
-            changed = True
+            SaleOrder._bigseller_apply_order_type(update_vals, order_type)
 
-        if platform and (
+        if 'partner_id' not in update_vals and platform and (
             not order.partner_id.is_company
             or order.partner_id.name.lower() not in (
                 'lazada', 'shopee', 'tiktok', 'bigseller')
         ):
             platform_partner = SaleOrder._bigseller_get_or_create_partner(
                 platform)
-            buyer_name = (
-                bs_order.get('buyerUsername')
-                or bs_order.get('contactPerson')
-                or ''
-            )
-            update_vals = {'partner_id': platform_partner.id}
-            if buyer_name:
-                delivery = SaleOrder._bigseller_get_or_create_delivery_address(
-                    buyer_name, platform_partner)
-                update_vals['partner_shipping_id'] = delivery.id
+            update_vals['partner_id'] = platform_partner.id
+
+        buyer_name = (
+            bs_order.get('buyerUsername')
+            or bs_order.get('contactPerson')
+            or ''
+        )
+        if buyer_name and 'partner_id' in update_vals:
+            partner_rec = self.env['res.partner'].browse(
+                update_vals['partner_id'])
+            delivery = SaleOrder._bigseller_get_or_create_delivery_address(
+                buyer_name, partner_rec)
+            update_vals['partner_shipping_id'] = delivery.id
+
+        if update_vals:
             order.write(update_vals)
             changed = True
 
